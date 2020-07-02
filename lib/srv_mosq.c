@@ -19,7 +19,11 @@ Contributors:
 #ifdef WITH_SRV
 #  include <ares.h>
 
-#  include <arpa/nameser.h>
+#  ifdef _MSC_VER
+#    include <ares/nameser.h>
+#  else
+#    include <arpa/nameser.h>
+#  endif
 #  include <stdio.h>
 #  include <string.h>
 #endif

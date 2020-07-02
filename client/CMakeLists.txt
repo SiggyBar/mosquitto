@@ -2,6 +2,9 @@ include_directories(${mosquitto_SOURCE_DIR} ${mosquitto_SOURCE_DIR}/lib
 			${STDBOOL_H_PATH} ${STDINT_H_PATH} ${PTHREAD_INCLUDE_DIR}
 			${OPENSSL_INCLUDE_DIR})
 link_directories(${mosquitto_BINARY_DIR}/lib)
+if (LIB_CARES)
+	link_directories(${LIB_CARES})
+endif (LIB_CARES)
 
 set(shared_src client_shared.c client_shared.h client_props.c)
 
@@ -28,6 +31,10 @@ if (QNX)
     target_link_libraries(mosquitto_sub socket)
     target_link_libraries(mosquitto_rr socket)
 endif()
+
+target_link_libraries(mosquitto_pub ${OPENSSL_LIBRARIES} ${PTHREAD_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(mosquitto_sub ${OPENSSL_LIBRARIES} ${PTHREAD_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(mosquitto_rr ${OPENSSL_LIBRARIES} ${PTHREAD_LIBRARIES} ${CMAKE_DL_LIBS})
 
 install(TARGETS mosquitto_pub RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(TARGETS mosquitto_sub RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

@@ -1,6 +1,9 @@
 include_directories(${mosquitto_SOURCE_DIR}/lib ${mosquitto_SOURCE_DIR}/lib/cpp
 			${STDBOOL_H_PATH} ${STDINT_H_PATH})
 link_directories(${mosquitto_BINARY_DIR}/lib)
+if (LIB_CARES)
+	link_directories(${LIB_CARES})
+endif (LIB_CARES)
 
 set(CPP_SRC mosquittopp.cpp mosquittopp.h)
 
