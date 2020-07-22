@@ -577,25 +577,83 @@ int net__tls_load_verify(struct mosquitto__listener *listener)
 }
 
 
+static int net__socket_listen_to_address(struct mosquitto__listener *listener, struct addrinfo *rp, int ss_opt_v6only)
+{
+	mosq_sock_t sock = INVALID_SOCKET;
+	int ss_opt = 1;
+#ifdef SO_BINDTODEVICE
+	struct ifreq ifr;
+#endif
+
+	assert(listener);
+	assert(rp);
+
+	sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+	if(sock == INVALID_SOCKET){
+		net__print_error(MOSQ_LOG_WARNING, "Warning: %s");
+		return 0;
+	}
+	listener->sock_count++;
+	listener->socks = mosquitto__realloc(listener->socks, sizeof(mosq_sock_t)*listener->sock_count);
+	if(!listener->socks){
+		log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
+		return MOSQ_ERR_NOMEM;
+	}
+	listener->socks[listener->sock_count-1] = sock;
+
+#ifndef WIN32
+	ss_opt = 1;
+	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &ss_opt, sizeof(ss_opt));
+#endif
+#ifdef IPV6_V6ONLY
+	setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &ss_opt_v6only, sizeof(ss_opt_v6only));
+#endif
+
+	if(net__socket_nonblock(&sock)){
+		return 1;
+	}
+
+#ifdef SO_BINDTODEVICE
+	if(listener->bind_interface){
+		memset(&ifr, 0, sizeof(ifr));
+		strncpy(ifr.ifr_name, listener->bind_interface, sizeof(ifr.ifr_name)-1);
+		ifr.ifr_name[sizeof(ifr.ifr_name)-1] = '\0';
+		log__printf(NULL, MOSQ_LOG_INFO, "Binding listener to interface \"%s\".", ifr.ifr_name);
+		if(setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr)) < 0) {
+			net__print_error(MOSQ_LOG_ERR, "Error: %s");
+			COMPAT_CLOSE(sock);
+			return 1;
+		}
+	}
+#endif
+
+	if(bind(sock, rp->ai_addr, rp->ai_addrlen) == -1){
+		net__print_error(MOSQ_LOG_ERR, "Error: %s");
+		COMPAT_CLOSE(sock);
+		return 1;
+	}
+
+	if(listen(sock, 100) == -1){
+		net__print_error(MOSQ_LOG_ERR, "Error: %s");
+		COMPAT_CLOSE(sock);
+		return 1;
+	}
+
+	return 0;
+}
+
+
 /* Creates a socket and listens on port 'port'.
  * Returns 1 on failure
  * Returns 0 on success.
  */
 int net__socket_listen(struct mosquitto__listener *listener)
 {
-	mosq_sock_t sock = INVALID_SOCKET;
 	struct addrinfo hints;
 	struct addrinfo *ainfo, *rp;
 	char service[10];
 	int rc;
-#ifndef WIN32
-	int ss_opt = 1;
-#else
-	char ss_opt = 1;
-#endif
-#ifdef SO_BINDTODEVICE
-	struct ifreq ifr;
-#endif
+	int i;
 
 	if(!listener) return MOSQ_ERR_INVAL;
 
@@ -621,83 +679,35 @@ int net__socket_listen(struct mosquitto__listener *listener)
 	for(rp = ainfo; rp; rp = rp->ai_next){
 		if(rp->ai_family == AF_INET){
 			log__printf(NULL, MOSQ_LOG_INFO, "Opening ipv4 listen socket on port %d.", ntohs(((struct sockaddr_in *)rp->ai_addr)->sin_port));
+			rc = net__socket_listen_to_address(listener, rp, 1);
+			if (rc) break;
 		}else if(rp->ai_family == AF_INET6){
 			log__printf(NULL, MOSQ_LOG_INFO, "Opening ipv6 listen socket on port %d.", ntohs(((struct sockaddr_in6 *)rp->ai_addr)->sin6_port));
-		}else{
-			continue;
-		}
-
-		sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-		if(sock == INVALID_SOCKET){
-			net__print_error(MOSQ_LOG_WARNING, "Warning: %s");
-			continue;
-		}
-		listener->sock_count++;
-		listener->socks = mosquitto__realloc(listener->socks, sizeof(mosq_sock_t)*listener->sock_count);
-		if(!listener->socks){
-			log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
-			freeaddrinfo(ainfo);
-			return MOSQ_ERR_NOMEM;
-		}
-		listener->socks[listener->sock_count-1] = sock;
-
-#ifndef WIN32
-		ss_opt = 1;
-		setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &ss_opt, sizeof(ss_opt));
+			rc = net__socket_listen_to_address(listener, rp, 1);
+			if (rc) break;
+#ifdef WIN32
+			rc = net__socket_listen_to_address(listener, rp, 0);
+			if (rc) break;
 #endif
-#ifdef IPV6_V6ONLY
-		ss_opt = 1;
-		setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &ss_opt, sizeof(ss_opt));
-#endif
-
-		if(net__socket_nonblock(&sock)){
-			freeaddrinfo(ainfo);
-			return 1;
-		}
-
-#ifdef SO_BINDTODEVICE
-		if(listener->bind_interface){
-			memset(&ifr, 0, sizeof(ifr));
-			strncpy(ifr.ifr_name, listener->bind_interface, sizeof(ifr.ifr_name)-1);
-			ifr.ifr_name[sizeof(ifr.ifr_name)-1] = '\0';
-			log__printf(NULL, MOSQ_LOG_INFO, "Binding listener to interface \"%s\".", ifr.ifr_name);
-			if(setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr)) < 0) {
-				net__print_error(MOSQ_LOG_ERR, "Error: %s");
-				COMPAT_CLOSE(sock);
-				freeaddrinfo(ainfo);
-				return 1;
-			}
-		}
-#endif
-
-		if(bind(sock, rp->ai_addr, rp->ai_addrlen) == -1){
-			net__print_error(MOSQ_LOG_ERR, "Error: %s");
-			COMPAT_CLOSE(sock);
-			freeaddrinfo(ainfo);
-			return 1;
-		}
-
-		if(listen(sock, 100) == -1){
-			net__print_error(MOSQ_LOG_ERR, "Error: %s");
-			freeaddrinfo(ainfo);
-			COMPAT_CLOSE(sock);
-			return 1;
 		}
 	}
 	freeaddrinfo(ainfo);
+	if(rc){
+		goto cleanup;
+	}
 
 	/* We need to have at least one working socket. */
 	if(listener->sock_count > 0){
 #ifdef WITH_TLS
 		if((listener->cafile || listener->capath) && listener->certfile && listener->keyfile){
 			if(net__tls_server_ctx(listener)){
-				COMPAT_CLOSE(sock);
-				return 1;
+				rc = 1;
+				goto cleanup;
 			}
 
 			if(net__tls_load_verify(listener)){
-				COMPAT_CLOSE(sock);
-				return 1;
+				rc = 1;
+				goto cleanup;
 			}
 #  ifdef FINAL_WITH_TLS_PSK
 		}else if(listener->psk_hint){
@@ -709,8 +719,8 @@ int net__socket_listen(struct mosquitto__listener *listener)
 			}
 
 			if(net__tls_server_ctx(listener)){
-				COMPAT_CLOSE(sock);
-				return 1;
+				rc = 1;
+				goto cleanup;
 			}
 			SSL_CTX_set_psk_server_callback(listener->ssl_ctx, psk_server_callback);
 			if(listener->psk_hint){
@@ -718,8 +728,8 @@ int net__socket_listen(struct mosquitto__listener *listener)
 				if(rc == 0){
 					log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to set TLS PSK hint.");
 					net__print_ssl_error(NULL);
-					COMPAT_CLOSE(sock);
-					return 1;
+					rc = 1;
+					goto cleanup;
 				}
 			}
 #  endif /* FINAL_WITH_TLS_PSK */
@@ -729,6 +739,12 @@ int net__socket_listen(struct mosquitto__listener *listener)
 	}else{
 		return 1;
 	}
+
+cleanup:
+	for(i=0; i<listener->sock_count; i++){
+		COMPAT_CLOSE(listener->socks[i]);
+	}
+	return rc;
 }
 
 int net__socket_get_address(mosq_sock_t sock, char *buf, int len)
